@@ -105,10 +105,40 @@ export class FlexDBClient {
    * Open a new transaction and return a handle.
    * The handle exposes query(), execute(), commit(), and rollback().
    * Only tables in "raft" mode support transactions.
+   *
+   * Prefer `transaction(fn)` for the automatic commit/rollback wrapper.
    */
   async beginTransaction(): Promise<TransactionHandle> {
     const res = await this.post<TransactionBeginResponse>("/v1/transaction/begin", {});
     return this.buildHandle(res.transaction_id, new Date(res.expires_at));
+  }
+
+  /**
+   * Run `fn` inside a transaction, committing on success and rolling back on
+   * any thrown error. The resolved value of `fn` is returned.
+   *
+   * ```ts
+   * const result = await db.transaction(async (tx) => {
+   *   await tx.execute({ sql: "UPDATE accounts SET balance = balance - ?1 WHERE id = ?2", params: [100, 1] });
+   *   await tx.execute({ sql: "UPDATE accounts SET balance = balance + ?1 WHERE id = ?2", params: [100, 2] });
+   *   return "transferred";
+   * });
+   * ```
+   */
+  async transaction<T>(fn: (tx: TransactionHandle) => Promise<T>): Promise<T> {
+    const tx = await this.beginTransaction();
+    try {
+      const result = await fn(tx);
+      await tx.commit();
+      return result;
+    } catch (err) {
+      try {
+        await tx.rollback();
+      } catch {
+        // Ignore rollback errors (e.g. already expired) — surface original error
+      }
+      throw err;
+    }
   }
 
   private buildHandle(id: string, expiresAt: Date): TransactionHandle {

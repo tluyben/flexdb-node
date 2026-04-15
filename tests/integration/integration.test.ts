@@ -153,6 +153,43 @@ describe("FlexDB integration", () => {
     assert.equal(check.results[0].rows[0][0], 1);
   });
 
+  it("transaction() helper commits on success and returns value", async () => {
+    const val = await client.transaction(async (tx) => {
+      await tx.execute([
+        {
+          sql: `INSERT INTO ${testTable} (name, val) VALUES (?1, ?2)`,
+          params: ["tx-helper-ok", 7],
+        },
+      ]);
+      return "done";
+    });
+    assert.equal(val, "done");
+    const check = await client.query([
+      { sql: `SELECT COUNT(*) FROM ${testTable} WHERE name = ?1`, params: ["tx-helper-ok"] },
+    ]);
+    assert.equal(check.results[0].rows[0][0], 1);
+  });
+
+  it("transaction() helper rolls back on thrown error", async () => {
+    await assert.rejects(
+      () =>
+        client.transaction(async (tx) => {
+          await tx.execute([
+            {
+              sql: `INSERT INTO ${testTable} (name, val) VALUES (?1, ?2)`,
+              params: ["tx-helper-fail", 0],
+            },
+          ]);
+          throw new Error("intentional");
+        }),
+      /intentional/,
+    );
+    const check = await client.query([
+      { sql: `SELECT COUNT(*) FROM ${testTable} WHERE name = ?1`, params: ["tx-helper-fail"] },
+    ]);
+    assert.equal(check.results[0].rows[0][0], 0);
+  });
+
   it("rolls back a transaction", async () => {
     const tx = await client.beginTransaction();
     await tx.execute([

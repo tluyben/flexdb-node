@@ -103,6 +103,19 @@ await db.execute({
 
 Only tables in `raft` mode support transactions.
 
+**Recommended — `transaction(fn)` wrapper** (auto commit/rollback):
+
+```ts
+const result = await db.transaction(async (tx) => {
+  await tx.execute({ sql: "UPDATE accounts SET balance = balance - ?1 WHERE id = ?2", params: [100, 1] });
+  await tx.execute({ sql: "UPDATE accounts SET balance = balance + ?1 WHERE id = ?2", params: [100, 2] });
+  return "transferred";
+});
+// commits on success, rolls back and re-throws on any error
+```
+
+**Manual handle** (for explicit control):
+
 ```ts
 const tx = await db.beginTransaction();
 try {
