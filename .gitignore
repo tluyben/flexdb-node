@@ -1,0 +1,6 @@
+dist/
+node_modules/
+.flexdb-cluster
+*.tsbuildinfo
+coverage/
+.env
