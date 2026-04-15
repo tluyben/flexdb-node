@@ -25,6 +25,10 @@ export interface StatementResult {
 export interface QueryResponse {
   results: StatementResult[];
   node_id: string;
+  /** Role of the node that received the request: "leader", "follower", or "standalone". */
+  role: "leader" | "follower" | "standalone";
+  /** Node ID of the node that actually executed the SQL (differs from node_id when forwarded to leader). */
+  executed_on: string;
   raft_index: number;
   crdt_conflicts: unknown[];
 }

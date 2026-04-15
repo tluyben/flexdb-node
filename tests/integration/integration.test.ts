@@ -104,6 +104,8 @@ describe("FlexDB integration", () => {
     assert.equal(res.results[0].rows.length, 1);
     assert.equal(res.results[0].rows[0][1], "alpha");
     assert.ok(typeof res.node_id === "string");
+    assert.ok(["leader", "follower", "standalone"].includes(res.role), `unexpected role: ${res.role}`);
+    assert.ok(typeof res.executed_on === "string" && res.executed_on.length > 0);
   });
 
   it("query returns column names", async () => {

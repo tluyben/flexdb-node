@@ -109,6 +109,21 @@ const { results } = await db.query(
 );
 ```
 
+#### Query response telemetry
+
+Every `QueryResponse` includes observability fields alongside `results`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `node_id` | `string` | ID of the node that received the request |
+| `role` | `"leader" \| "follower" \| "standalone"` | Role of the receiving node at request time |
+| `executed_on` | `string` | ID of the node where SQL actually ran — differs from `node_id` when the request was forwarded to the leader |
+| `raft_index` | `number` | Committed RAFT log index after this write (0 for reads / standalone) |
+| `crdt_conflicts` | `unknown[]` | Conflict records for CRDT tables (non-empty only when two nodes wrote the same key concurrently) |
+
+`executed_on === node_id` for `raft` writes (leader executed), `crdt` writes (always local), and all reads.
+`executed_on !== node_id` when a follower forwards an `eventual` or `raft`-mode write to the leader.
+
 ### `db.execute(statements)`
 
 Like `query` but rejects SELECT — useful for enforcing write-only paths.
