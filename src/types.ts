@@ -5,7 +5,7 @@ export interface Statement {
   params?: (string | number | boolean | null)[];
 }
 
-export type ConsistencyMode = "strong" | "raft" | "eventual";
+export type ConsistencyMode = "raft" | "eventual";
 export type TableMode = "raft" | "eventual" | "crdt";
 export type CrdtStrategy = "lww" | "lww_column";
 
