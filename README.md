@@ -83,9 +83,32 @@ await db.query([
   { sql: "SELECT count(*) FROM orders" },
   { sql: "SELECT count(*) FROM products" },
 ]);
+```
 
-// Override consistency
-await db.query({ sql: "SELECT ..." }, "eventual");
+#### The `consistency` parameter
+
+Consistency is primarily configured **per table** via `db.setTableMode()` — that's where you set the default routing behaviour for all queries against a table. Most callers never need to touch the `consistency` argument on `query()`.
+
+The optional second argument is a **per-request override** that lets you deviate from the table's default for a single call:
+
+| Table mode | Override to `"strong"` | Override to `"eventual"` |
+|------------|------------------------|--------------------------|
+| `raft`     | no-op (already strong) | reads from any follower (stale) |
+| `eventual` | forces read from leader (fresh) | no-op (already eventual) |
+| `crdt`     | not supported — server rejects | no-op |
+
+The table mode is the ceiling: you can weaken a strong table's read for one call, or strengthen an eventual table's read for one call — but you cannot override a `crdt` table to strong consistency because the server doesn't support it.
+
+**When you'd use it:** after writing something critical on an `eventual` table, force a single read back through the leader to confirm it committed:
+
+```ts
+await db.execute({ sql: "INSERT INTO jobs (task) VALUES (?1)", params: ["deploy"] });
+
+// Force leader read — bypasses eventual routing for this one query
+const { results } = await db.query(
+  { sql: "SELECT id FROM jobs WHERE task = ?1", params: ["deploy"] },
+  "strong",
+);
 ```
 
 ### `db.execute(statements)`
