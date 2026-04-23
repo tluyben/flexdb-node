@@ -4,11 +4,42 @@ export type { ClusterFile, ClusterFileNode } from "./cluster-file.js";
 export {
   FlexDBAuthError,
   FlexDBError,
+  FlexDBHonkerUnavailableError,
   FlexDBNoHealthyNodeError,
   FlexDBNoLeaderError,
   FlexDBTimeoutError,
   FlexDBTransactionError,
 } from "./errors.js";
+export {
+  HonkerClient,
+  HonkerJobs,
+  HonkerLock,
+  HonkerNotification,
+  HonkerQueue,
+  HonkerRateLimit,
+  HonkerScheduler,
+  HonkerStream,
+} from "./honker.js";
+export type {
+  ClaimOptions,
+  EnqueueOptions,
+  EnqueueResponse,
+  HonkerRequester,
+  HonkerStatusResponse,
+  JobItem,
+  NotificationItem,
+  OffsetResponse,
+  PollOptions,
+  QueueStats,
+  RateLimitOptions,
+  RateLimitResponse,
+  ReadEventsOptions,
+  RegisterHandlerOptions,
+  RetryOptions,
+  SchedulerHandler,
+  SchedulerNextResponse,
+  StreamEvent,
+} from "./honker.js";
 export type { ManagedNode } from "./node-manager.js";
 export type {
   AnalyticalTable,

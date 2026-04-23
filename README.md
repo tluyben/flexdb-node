@@ -197,10 +197,10 @@ await db.disableSearch("articles");
 ### Cluster / observability
 
 ```ts
-await db.health();   // { status: "ok" }
+await db.health();    // { status: "ok" }
 await db.getStatus(); // node role, raft index, active transactions, …
 await db.getNodes();  // all cluster nodes
-await db.metrics();  // raw Prometheus text
+await db.metrics();   // raw Prometheus text
 ```
 
 ### Analytics (requires FlexDB analytics feature)
@@ -211,12 +211,214 @@ await db.getAnalyticsTable("daily_sales");
 await db.rebuildAnalyticsTable("daily_sales");
 ```
 
+---
+
+## Honker — queues, streams, locks, and scheduler
+
+Honker is an optional server feature that adds work queues, durable event streams,
+distributed locks, rate limiting, ephemeral notifications, and a cron scheduler —
+all stored in the same SQLite file as your application data, replicated over RAFT.
+
+It must be compiled into the server with `--features honker`. All routes always
+exist; when the feature is absent they return `503` and the SDK throws
+`FlexDBHonkerUnavailableError`. Check availability before use:
+
+```ts
+const { available } = await db.honker.status();
+if (!available) {
+  console.warn("honker not enabled on this cluster");
+}
+```
+
+### Work queues
+
+```ts
+const q = db.honker.queue("email");
+
+// Enqueue a job
+const { job_id } = await q.enqueue(
+  { to: "user@example.com", subject: "Hello" },
+  { priority: 1, delay_s: 0, expires_s: 3600 },
+);
+
+// Claim a batch (worker side)
+const { jobs } = await q.claim({ worker_id: "w-1", batch_size: 10, visibility_s: 300 });
+for (const job of jobs) {
+  // process job.payload …
+}
+
+// Acknowledge completed jobs
+await q.ack([42, 43], "w-1");
+
+// Retry with backoff
+await q.retry(42, "w-1", { delay_s: 30, error: "smtp timeout" });
+
+// Permanently dead-letter
+await q.fail(42, "w-1", "unrecoverable");
+
+// Queue depth
+const { pending, processing, dead } = await q.stats();
+
+// Sweep expired jobs
+await q.sweepExpired();
+```
+
+### Durable streams
+
+Append-only logs with per-consumer offset tracking. Consumers can replay from
+any checkpoint.
+
+```ts
+const stream = db.honker.stream("events");
+
+// Publish
+const { event_id } = await stream.publish({ user_id: 42, action: "login" });
+
+// Read from an offset (optionally auto-advance the consumer cursor)
+const events = await stream.read({ consumer: "dashboard", since: 0, save: true });
+// events: [{ id, payload, created_at }, …]
+
+// Manually manage the offset
+await stream.saveOffset("dashboard", 7);
+const { offset } = await stream.getOffset("dashboard");
+```
+
+### Ephemeral notifications
+
+Fire-and-forget channel messages. Not stored durably — use streams when replay
+is needed.
+
+```ts
+const notif = db.honker.notification("orders");
+
+// Fire
+await notif.fire({ order_id: 123 });
+
+// Poll for new messages since a rowid
+const items = await notif.poll({ since: 0, limit: 50 });
+// items: [{ rowid, payload, created_at }, …]
+
+// Stream in real time via SSE (async generator, Node 18+)
+const ac = new AbortController();
+for await (const item of notif.subscribe(ac.signal)) {
+  console.log(item.payload);
+  // call ac.abort() to stop
+}
+
+// Prune old notifications
+await notif.prune();
+```
+
+### Distributed locks
+
+Named TTL-based mutual exclusion. A crashed holder is evicted automatically
+after the TTL — no manual cleanup needed.
+
+```ts
+const lock = db.honker.lock("migration");
+
+const { acquired } = await lock.acquire({ ttl_s: 60 });
+if (acquired) {
+  try {
+    // do the work …
+  } finally {
+    await lock.release();
+  }
+}
+```
+
+### Rate limiting
+
+Token-bucket limiter stored in SQLite. Useful for per-key, per-IP, or
+per-resource limits.
+
+```ts
+const rl = db.honker.rateLimit("api-key-abc");
+
+const { allowed, remaining, retry_after_s } = await rl.check({
+  limit: 100,
+  per_s: 60,
+});
+
+if (!allowed) {
+  console.log(`rate limited, retry in ${retry_after_s}s`);
+}
+
+// Sweep stale buckets periodically
+await rl.sweep();
+```
+
+### Scheduler
+
+Register cron handlers tied to queues. A scheduler tick enqueues any jobs
+whose cron time has passed. The built-in server worker drives this
+automatically when Honker is active.
+
+```ts
+const sched = db.honker.scheduler;
+
+// Register
+await sched.register({
+  queue: "email",
+  handler_name: "daily-digest",
+  cron_expr: "0 3 * * *",
+});
+
+// List
+const { handlers } = await sched.list();
+
+// Manual tick (enqueues overdue jobs)
+const { jobs_enqueued } = await sched.tick("scheduler-0");
+
+// Time until next job
+const { next_ts, handler_name } = await sched.next();
+
+// Unregister
+await sched.unregister("daily-digest");
+```
+
+### Job results
+
+Workers can store structured results keyed by job ID for the enqueuer to retrieve.
+
+```ts
+const jobs = db.honker.jobs;
+
+// Worker: store result after processing
+await jobs.storeResult(42, { sent_at: Date.now() }, /* ttl_s */ 3600);
+
+// Enqueuer: retrieve the outcome
+const result = await jobs.getResult(42);
+
+// Maintenance: sweep expired results
+await jobs.sweepResults();
+```
+
+### Transactional enqueue
+
+Honker's headline feature: enqueue a job and write business data in the same
+RAFT transaction — either both commit or neither does.
+
+```ts
+await db.transaction(async (tx) => {
+  await tx.execute({
+    sql: "INSERT INTO orders (id, item, price) VALUES (?1, ?2, ?3)",
+    params: [99, "widget", 29.99],
+  });
+  // enqueued into the same transaction — rolls back with the INSERT if it fails
+  await tx.enqueue("fulfillment", { order_id: 99 });
+});
+```
+
+---
+
 ## Error types
 
 ```ts
 import {
   FlexDBError,
   FlexDBAuthError,
+  FlexDBHonkerUnavailableError,
   FlexDBNoLeaderError,
   FlexDBTransactionError,
   FlexDBNoHealthyNodeError,
@@ -226,14 +428,25 @@ import {
 try {
   await db.query({ sql: "SELECT 1" });
 } catch (err) {
-  if (err instanceof FlexDBAuthError)         console.error("check your auth token");
-  if (err instanceof FlexDBNoLeaderError)     console.error("cluster is electing a leader");
-  if (err instanceof FlexDBNoHealthyNodeError) console.error("all nodes are unreachable");
-  if (err instanceof FlexDBTimeoutError)      console.error("request timed out");
-  if (err instanceof FlexDBTransactionError)  console.error("transaction error:", err.message);
-  if (err instanceof FlexDBError)             console.error(err.statusCode, err.message);
+  if (err instanceof FlexDBAuthError)              console.error("check your auth token");
+  if (err instanceof FlexDBHonkerUnavailableError) console.error("honker not enabled on server");
+  if (err instanceof FlexDBNoLeaderError)          console.error("cluster is electing a leader");
+  if (err instanceof FlexDBNoHealthyNodeError)     console.error("all nodes are unreachable");
+  if (err instanceof FlexDBTimeoutError)           console.error("request timed out");
+  if (err instanceof FlexDBTransactionError)       console.error("transaction error:", err.message);
+  if (err instanceof FlexDBError)                  console.error(err.statusCode, err.message);
 }
 ```
+
+| Class | Status | When thrown |
+|-------|--------|-------------|
+| `FlexDBAuthError` | 401 | Invalid or missing auth token |
+| `FlexDBHonkerUnavailableError` | 503 | Server not compiled with `--features honker`, or extension failed to load |
+| `FlexDBNoLeaderError` | 503 | RAFT cluster has no elected leader |
+| `FlexDBTransactionError` | 404/409/410 | Transaction not found, conflicted, or expired |
+| `FlexDBNoHealthyNodeError` | — | All configured nodes are unreachable |
+| `FlexDBTimeoutError` | — | Request exceeded `timeoutMs` |
+| `FlexDBError` | any | Base class — catch-all for unexpected status codes |
 
 ## Running tests
 

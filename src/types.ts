@@ -1,3 +1,6 @@
+import type { EnqueueOptions, EnqueueResponse } from "./honker.js";
+export type { EnqueueOptions, EnqueueResponse };
+
 // ─── Request / Response types ────────────────────────────────────────────────
 
 export interface Statement {
@@ -158,4 +161,6 @@ export interface TransactionHandle {
   execute(statements: Statement[]): Promise<QueryResponse>;
   commit(): Promise<TransactionCommitResponse>;
   rollback(): Promise<TransactionRollbackResponse>;
+  /** Enqueue a honker job atomically within this transaction. */
+  enqueue(queue: string, payload: unknown, options?: EnqueueOptions): Promise<EnqueueResponse>;
 }

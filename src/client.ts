@@ -1,11 +1,13 @@
 import {
   FlexDBAuthError,
   FlexDBError,
+  FlexDBHonkerUnavailableError,
   FlexDBNoHealthyNodeError,
   FlexDBNoLeaderError,
   FlexDBTimeoutError,
   FlexDBTransactionError,
 } from "./errors.js";
+import { HonkerClient, type HonkerRequester } from "./honker.js";
 import { NodeManager } from "./node-manager.js";
 import { loadClusterFile } from "./cluster-file.js";
 import type {
@@ -14,6 +16,8 @@ import type {
   AnalyticsRebuildResponse,
   ConsistencyMode,
   CrdtStrategy,
+  EnqueueOptions,
+  EnqueueResponse,
   FlexDBClientOptions,
   HealthResponse,
   NodesResponse,
@@ -39,6 +43,7 @@ export class FlexDBClient {
   private readonly manager: NodeManager;
   private readonly authToken?: string;
   private readonly timeoutMs: number;
+  private _honker?: HonkerClient;
 
   /**
    * Create a FlexDBClient from a `.flexdb-cluster` file.
@@ -182,6 +187,18 @@ export class FlexDBClient {
           txHeader,
         );
       },
+
+      async enqueue(
+        queue: string,
+        payload: unknown,
+        options?: EnqueueOptions,
+      ): Promise<EnqueueResponse> {
+        return self.post<EnqueueResponse>(
+          `/v1/queues/${encodeURIComponent(queue)}`,
+          { payload, ...options },
+          txHeader,
+        );
+      },
     };
   }
 
@@ -277,6 +294,29 @@ export class FlexDBClient {
     );
   }
 
+  // ─── Honker ───────────────────────────────────────────────────────────────
+
+  /**
+   * Access Honker features: queues, streams, notifications, locks, rate limits,
+   * and the scheduler. All methods throw `FlexDBHonkerUnavailableError` when the
+   * server was not compiled with `--features honker` or the extension failed to load.
+   *
+   * Check availability without throwing via `db.honker.status()`.
+   */
+  get honker(): HonkerClient {
+    if (!this._honker) {
+      const req: HonkerRequester = {
+        post: (path, body, headers) => this.post(path, body, headers),
+        get: (path) => this.get(path),
+        put: (path, body) => this.put(path, body),
+        delete: (path) => this.delete(path),
+        rawFetch: (path, signal) => this.rawFetch(path, signal),
+      };
+      this._honker = new HonkerClient(req);
+    }
+    return this._honker;
+  }
+
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   /**
@@ -345,6 +385,9 @@ export class FlexDBClient {
       case 401:
         throw new FlexDBAuthError(node.url);
       case 503:
+        if (message.includes("honker")) {
+          throw new FlexDBHonkerUnavailableError(node.url, message);
+        }
         throw new FlexDBNoLeaderError(node.url);
       case 404:
       case 409:
@@ -406,5 +449,42 @@ export class FlexDBClient {
     }
     this.manager.markHealthy(node.url);
     return res.text();
+  }
+
+  // Used by HonkerNotification.subscribe() for the SSE endpoint.
+  private async rawFetch(path: string, signal?: AbortSignal): Promise<Response> {
+    const node = this.manager.next();
+    const url = `${node.url}${path}`;
+    const headers: Record<string, string> = {};
+    if (this.authToken) headers["Authorization"] = `Bearer ${this.authToken}`;
+
+    let res: Response;
+    try {
+      res = await fetch(url, { headers, signal });
+    } catch (err: unknown) {
+      this.manager.markFailed(node.url);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new FlexDBTimeoutError(url, this.timeoutMs);
+      }
+      throw new FlexDBNoHealthyNodeError();
+    }
+
+    if (!res.ok) {
+      let errBody: { error?: string } = {};
+      try {
+        errBody = (await res.json()) as { error?: string };
+      } catch { /* ignore */ }
+      const message = errBody.error ?? res.statusText;
+      if (res.status === 503) {
+        if (message.includes("honker")) {
+          throw new FlexDBHonkerUnavailableError(node.url, message);
+        }
+        throw new FlexDBNoLeaderError(node.url);
+      }
+      throw new FlexDBError(message, res.status, node.url);
+    }
+
+    this.manager.markHealthy(node.url);
+    return res;
   }
 }

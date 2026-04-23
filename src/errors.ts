@@ -43,3 +43,14 @@ export class FlexDBTimeoutError extends Error {
     this.name = "FlexDBTimeoutError";
   }
 }
+
+export class FlexDBHonkerUnavailableError extends FlexDBError {
+  constructor(nodeUrl: string, message?: string) {
+    super(
+      message ?? "Honker extension is not available on this node — rebuild the server with --features honker",
+      503,
+      nodeUrl,
+    );
+    this.name = "FlexDBHonkerUnavailableError";
+  }
+}
