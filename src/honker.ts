@@ -165,8 +165,9 @@ export class HonkerQueue {
   }
 
   sweepExpired(): Promise<{ swept: number }> {
-    return this.req.delete<{ swept: number }>(
-      `/v1/queues/${enc(this.name)}/expired`,
+    return this.req.post<{ swept: number }>(
+      `/v1/queues/${enc(this.name)}/sweep`,
+      {},
     );
   }
 }
@@ -181,7 +182,7 @@ export class HonkerStream {
 
   publish(payload: unknown): Promise<{ event_id: number }> {
     return this.req.post<{ event_id: number }>(
-      `/v1/streams/${enc(this.name)}/publish`,
+      `/v1/streams/${enc(this.name)}`,
       { payload },
     );
   }
@@ -191,7 +192,7 @@ export class HonkerStream {
     if (options?.consumer !== undefined) p.set("consumer", options.consumer);
     if (options?.since !== undefined) p.set("since", String(options.since));
     if (options?.save) p.set("save", "true");
-    return this.req.get<StreamEvent[]>(`/v1/streams/${enc(this.name)}/events${qs(p)}`);
+    return this.req.get<StreamEvent[]>(`/v1/streams/${enc(this.name)}${qs(p)}`);
   }
 
   saveOffset(consumer: string, offset: number): Promise<OffsetResponse> {
@@ -228,13 +229,13 @@ export class HonkerNotification {
     if (options?.since !== undefined) p.set("since", String(options.since));
     if (options?.limit !== undefined) p.set("limit", String(options.limit));
     return this.req.get<NotificationItem[]>(
-      `/v1/notifications/${enc(this.channel)}/poll${qs(p)}`,
+      `/v1/notifications/${enc(this.channel)}${qs(p)}`,
     );
   }
 
   async *subscribe(signal?: AbortSignal): AsyncGenerator<NotificationItem> {
     const res = await this.req.rawFetch(
-      `/v1/notifications/${enc(this.channel)}/subscribe`,
+      `/v1/notifications/${enc(this.channel)}/sse`,
       signal,
     );
     if (!res.body) return;
@@ -270,7 +271,7 @@ export class HonkerNotification {
 
   prune(): Promise<{ pruned: number }> {
     return this.req.delete<{ pruned: number }>(
-      `/v1/notifications/${enc(this.channel)}/prune`,
+      `/v1/notifications/${enc(this.channel)}`,
     );
   }
 }
@@ -304,14 +305,14 @@ export class HonkerRateLimit {
 
   check(options: RateLimitOptions): Promise<RateLimitResponse> {
     return this.req.post<RateLimitResponse>(
-      `/v1/rate-limits/${enc(this.name)}/check`,
+      `/v1/rate-limits/${enc(this.name)}`,
       options,
     );
   }
 
   sweep(): Promise<{ swept: number }> {
     return this.req.delete<{ swept: number }>(
-      `/v1/rate-limits/${enc(this.name)}/sweep`,
+      `/v1/rate-limits/${enc(this.name)}`,
     );
   }
 }
@@ -363,7 +364,7 @@ export class HonkerJobs {
     result: unknown,
     ttl_s?: number,
   ): Promise<{ ok: boolean }> {
-    return this.req.post<{ ok: boolean }>(`/v1/jobs/${job_id}/result`, {
+    return this.req.put<{ ok: boolean }>(`/v1/jobs/${job_id}/result`, {
       result,
       ttl_s: ttl_s ?? 3600,
     });
@@ -374,7 +375,7 @@ export class HonkerJobs {
   }
 
   sweepResults(): Promise<{ swept: number }> {
-    return this.req.delete<{ swept: number }>("/v1/jobs/results/sweep");
+    return this.req.post<{ swept: number }>("/v1/jobs/sweep-results", {});
   }
 }
 
@@ -388,6 +389,10 @@ export class HonkerClient {
 
   status(): Promise<HonkerStatusResponse> {
     return this.req.get<HonkerStatusResponse>("/v1/honker/status");
+  }
+
+  bootstrap(): Promise<{ ok: boolean }> {
+    return this.req.post<{ ok: boolean }>("/v1/honker/bootstrap", {});
   }
 
   queue(name: string): HonkerQueue {

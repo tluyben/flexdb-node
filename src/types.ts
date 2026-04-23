@@ -127,6 +127,116 @@ export interface AnalyticsRebuildResponse {
   time_ms: number;
 }
 
+// ─── Cluster node management ─────────────────────────────────────────────────
+
+export interface JoinNodeRequest {
+  node_id: string;
+  raft_id: number;
+  raft_addr: string;
+  http_addr: string;
+}
+
+export interface JoinNodeResponse {
+  joined: boolean;
+  node_id: string;
+  raft_id: number;
+  voters: number[];
+}
+
+export interface RemoveNodeResponse {
+  removed: boolean;
+  node_id: string;
+  raft_id: number;
+  remaining_voters: number[];
+}
+
+export interface WipeNodeResponse {
+  wiped_and_rejoined: boolean;
+  node_id: string;
+  raft_id: number;
+  voters: number[];
+}
+
+export interface WipeSelfResponse {
+  wiping: boolean;
+  node_id: string;
+  message: string;
+}
+
+// ─── Backup / restore / import ────────────────────────────────────────────────
+
+export interface RestoreResponse {
+  status: string;
+}
+
+export interface ImportDatabaseResponse {
+  status: string;
+  tables_imported: string[];
+  default_mode: string;
+  raft_note: string;
+}
+
+// ─── Client token / sync ─────────────────────────────────────────────────────
+
+export interface ClientTokenRequest {
+  claims: Record<string, unknown>;
+  tables: string[];
+  ttl_secs?: number;
+}
+
+export interface ClientTokenResponse {
+  token: string;
+  expires_at: string;
+  sync_url: string;
+}
+
+export interface SyncStatusResponse {
+  ok: boolean;
+  server_time: string;
+}
+
+export interface CrdtMeta {
+  timestamp: string;
+  node_id: string;
+  seq?: number;
+}
+
+export type PushOp = "upsert" | "delete";
+
+export interface PushEntry {
+  op: PushOp;
+  pk: string;
+  data?: Record<string, unknown>;
+  crdt_meta: CrdtMeta;
+}
+
+export interface SyncRequest {
+  table: string;
+  push?: PushEntry[];
+  pull_since?: string;
+  pull_limit?: number;
+}
+
+export interface RejectedEntry {
+  pk: string;
+  reason: string;
+}
+
+export interface ChangeEntry {
+  op: string;
+  pk: string;
+  data?: Record<string, unknown>;
+  crdt_meta: CrdtMeta;
+}
+
+export interface SyncResponse {
+  accepted: string[];
+  rejected: RejectedEntry[];
+  changes: ChangeEntry[];
+  cursor: string;
+  has_more: boolean;
+}
+
 // ─── Client config ────────────────────────────────────────────────────────────
 
 export interface FlexDBClientOptions {

@@ -1,4 +1,6 @@
 export { FlexDBClient } from "./client.js";
+export { BranchesClient } from "./branches.js";
+export type { BranchInfo, BranchesRequester } from "./branches.js";
 export { loadClusterFile } from "./cluster-file.js";
 export type { ClusterFile, ClusterFileNode } from "./cluster-file.js";
 export {
@@ -46,19 +48,34 @@ export type {
   AnalyticsGetResponse,
   AnalyticsListResponse,
   AnalyticsRebuildResponse,
+  ChangeEntry,
+  ClientTokenRequest,
+  ClientTokenResponse,
   ConsistencyMode,
+  CrdtMeta,
   CrdtStrategy,
   FlexDBClientOptions,
   HealthResponse,
+  ImportDatabaseResponse,
+  JoinNodeRequest,
+  JoinNodeResponse,
   NodeInfo,
   NodesResponse,
+  PushEntry,
+  PushOp,
   QueryRequest,
   QueryResponse,
+  RejectedEntry,
+  RemoveNodeResponse,
+  RestoreResponse,
   SearchRequest,
   SearchResponse,
   Statement,
   StatementResult,
   StatusResponse,
+  SyncRequest,
+  SyncResponse,
+  SyncStatusResponse,
   TableMode,
   TableModeResponse,
   TableSearchConfig,
@@ -66,4 +83,6 @@ export type {
   TransactionCommitResponse,
   TransactionHandle,
   TransactionRollbackResponse,
+  WipeNodeResponse,
+  WipeSelfResponse,
 } from "./types.js";

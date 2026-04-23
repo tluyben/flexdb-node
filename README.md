@@ -211,6 +211,114 @@ await db.getAnalyticsTable("daily_sales");
 await db.rebuildAnalyticsTable("daily_sales");
 ```
 
+### Backup, restore, and import
+
+```ts
+// Download a compressed snapshot (zstd-compressed SQLite)
+const snapshot = await db.backup();
+// snapshot is a Uint8Array — write to disk, upload to S3, etc.
+
+// Optionally encrypt server-side with your age public key
+const encrypted = await db.backup("age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p");
+
+// Restore from a snapshot — destructive, overwrites all data
+await db.restore(snapshot);
+
+// Import a plain SQLite database file, registering tables as raft (default)
+const sqliteBytes = await fs.readFile("legacy.db");
+await db.importDatabase(sqliteBytes, "eventual");
+```
+
+### Branches (requires `FEATURE_BRANCHING=true`)
+
+Database branching lets you snapshot the live database into a named branch
+and run queries or transactions against it independently.
+
+```ts
+const branches = db.branches;
+
+// List all branches
+const { branches: list } = await branches.list();
+
+// Create a branch (snapshots "main" by default)
+await branches.create("staging");
+await branches.create("experiment", "staging"); // branch from another branch
+
+// Get branch info
+const info = await branches.get("staging");
+// { name: "staging", is_default: false }
+
+// Rename a branch
+await branches.rename("staging", "staging-v2");
+
+// Switch an open transaction to a different branch
+const tx = await db.beginTransaction();
+await branches.switch("staging-v2", tx.id);
+// subsequent tx.query() / tx.execute() now run on staging-v2
+await tx.rollback();
+
+// Delete a branch
+await branches.delete("staging-v2");
+```
+
+### Cluster administration
+
+```ts
+// Join a new node into the cluster
+await db.joinNode({
+  node_id: "node-4",
+  raft_id: 4,
+  raft_addr: "10.0.0.4:4002",
+  http_addr: "10.0.0.4:4001",
+});
+
+// Remove a node from the cluster
+await db.removeNode("node-4");
+
+// Wipe a peer node and have it rejoin cleanly (useful for resetting a diverged peer)
+await db.wipeNode("node-3");
+
+// Wipe this node's databases and exit (systemd restarts it) — non-leader only
+await db.wipeSelf();
+```
+
+### Client tokens and sync
+
+Issue short-lived JWTs for mobile/browser clients to sync CRDT tables directly
+with the server. Tables must be in `crdt` mode.
+
+```ts
+// Server-side: issue a token scoped to specific tables
+const { token, expires_at } = await db.issueClientToken({
+  claims: { user_id: "u-42", tenant: "acme" },
+  tables: ["todos", "notes"],
+  ttl_secs: 3600,
+});
+
+// Check that the sync endpoint is reachable
+const { ok, server_time } = await db.syncStatus();
+
+// Client-side (mobile/browser): push local changes and pull server changes
+// Pass the issued token — it replaces server auth for this endpoint
+const result = await db.sync(
+  {
+    table: "todos",
+    push: [
+      {
+        op: "upsert",
+        pk: "item-1",
+        data: { title: "Buy milk", done: false },
+        crdt_meta: { timestamp: new Date().toISOString(), node_id: "client-abc", seq: 1 },
+      },
+    ],
+    pull_since: "2024-01-01T00:00:00Z",
+    pull_limit: 200,
+  },
+  token,
+);
+// result: { accepted, rejected, changes, cursor, has_more }
+```
+
 ---
 
 ## Honker — queues, streams, locks, and scheduler
@@ -224,9 +332,11 @@ exist; when the feature is absent they return `503` and the SDK throws
 `FlexDBHonkerUnavailableError`. Check availability before use:
 
 ```ts
-const { available } = await db.honker.status();
+const { available, bootstrapped } = await db.honker.status();
 if (!available) {
   console.warn("honker not enabled on this cluster");
+} else if (!bootstrapped) {
+  await db.honker.bootstrap(); // one-time initialisation
 }
 ```
 

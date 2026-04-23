@@ -8,25 +8,38 @@ import {
   FlexDBTransactionError,
 } from "./errors.js";
 import { HonkerClient, type HonkerRequester } from "./honker.js";
+import { BranchesClient, type BranchesRequester } from "./branches.js";
 import { NodeManager } from "./node-manager.js";
 import { loadClusterFile } from "./cluster-file.js";
 import type {
   AnalyticsGetResponse,
   AnalyticsListResponse,
   AnalyticsRebuildResponse,
+  ChangeEntry,
+  ClientTokenRequest,
+  ClientTokenResponse,
   ConsistencyMode,
   CrdtStrategy,
   EnqueueOptions,
   EnqueueResponse,
   FlexDBClientOptions,
   HealthResponse,
+  ImportDatabaseResponse,
+  JoinNodeRequest,
+  JoinNodeResponse,
   NodesResponse,
   QueryRequest,
   QueryResponse,
+  RejectedEntry,
+  RemoveNodeResponse,
+  RestoreResponse,
   SearchRequest,
   SearchResponse,
   Statement,
   StatusResponse,
+  SyncRequest,
+  SyncResponse,
+  SyncStatusResponse,
   TableMode,
   TableModeResponse,
   TableSearchConfig,
@@ -34,6 +47,8 @@ import type {
   TransactionCommitResponse,
   TransactionHandle,
   TransactionRollbackResponse,
+  WipeNodeResponse,
+  WipeSelfResponse,
 } from "./types.js";
 
 const DEFAULT_HEALTH_INTERVAL_MS = 10_000;
@@ -44,6 +59,7 @@ export class FlexDBClient {
   private readonly authToken?: string;
   private readonly timeoutMs: number;
   private _honker?: HonkerClient;
+  private _branches?: BranchesClient;
 
   /**
    * Create a FlexDBClient from a `.flexdb-cluster` file.
@@ -294,6 +310,123 @@ export class FlexDBClient {
     );
   }
 
+  // ─── Backup / restore / import ────────────────────────────────────────────
+
+  /**
+   * Download a zstd-compressed snapshot of the database.
+   * Pass an age X25519 public key (`age1...`) to receive an age-encrypted blob
+   * instead — the server discards plaintext after the request completes.
+   */
+  async backup(publicKey?: string): Promise<Uint8Array> {
+    const path = publicKey
+      ? `/v1/backup?public_key=${encodeURIComponent(publicKey)}`
+      : "/v1/backup";
+    return this.getBytes(path);
+  }
+
+  /**
+   * Restore the database from a zstd-compressed snapshot (the raw output of
+   * `backup()`, after decrypting if it was encrypted).
+   * **Destructive** — all existing data is overwritten.
+   */
+  restore(data: Uint8Array | ArrayBuffer): Promise<RestoreResponse> {
+    return this.postBinary<RestoreResponse>("/v1/restore", data);
+  }
+
+  /**
+   * Import a plain (uncompressed) SQLite database file, registering all user
+   * tables with the given default consistency mode (default: `"raft"`).
+   * Must be called on the RAFT leader in a multi-node cluster.
+   */
+  importDatabase(
+    data: Uint8Array | ArrayBuffer,
+    mode?: "raft" | "eventual" | "crdt",
+  ): Promise<ImportDatabaseResponse> {
+    return this.postBinary<ImportDatabaseResponse>(
+      "/v1/import",
+      data,
+      mode ? { mode } : undefined,
+    );
+  }
+
+  // ─── Cluster administration ────────────────────────────────────────────────
+
+  /** Add a new node to the RAFT cluster as a learner, then promote to voter. */
+  joinNode(req: JoinNodeRequest): Promise<JoinNodeResponse> {
+    return this.post<JoinNodeResponse>("/v1/nodes/join", req);
+  }
+
+  /** Remove a node from the RAFT voter set and the node registry. */
+  removeNode(nodeId: string): Promise<RemoveNodeResponse> {
+    return this.delete<RemoveNodeResponse>(`/v1/nodes/${encodeURIComponent(nodeId)}`);
+  }
+
+  /**
+   * Remove a node from the cluster, instruct it to wipe its data and restart,
+   * then re-add it once it comes back up. Useful for resetting a diverged peer.
+   */
+  wipeNode(nodeId: string): Promise<WipeNodeResponse> {
+    return this.post<WipeNodeResponse>(
+      `/v1/nodes/${encodeURIComponent(nodeId)}/wipe`,
+      {},
+    );
+  }
+
+  /**
+   * Instruct this node to delete its databases and exit (systemd restarts it
+   * clean). Only valid on non-leader nodes.
+   */
+  wipeSelf(): Promise<WipeSelfResponse> {
+    return this.post<WipeSelfResponse>("/v1/admin/wipe", {});
+  }
+
+  // ─── Client tokens and sync ────────────────────────────────────────────────
+
+  /**
+   * Issue a short-lived JWT for a mobile/browser client, scoped to a list of
+   * CRDT tables. The token is used as the Bearer credential on `sync()` calls.
+   */
+  issueClientToken(req: ClientTokenRequest): Promise<ClientTokenResponse> {
+    return this.post<ClientTokenResponse>("/v1/client-token", req);
+  }
+
+  /**
+   * Execute a sync operation on behalf of a mobile/browser client.
+   * `clientToken` is the JWT returned by `issueClientToken()` — it replaces
+   * the server auth token for this request (the sync endpoint uses client JWT
+   * auth, not server bearer auth).
+   */
+  sync(req: SyncRequest, clientToken: string): Promise<SyncResponse> {
+    return this.post<SyncResponse>("/v1/sync", req, {
+      Authorization: `Bearer ${clientToken}`,
+    });
+  }
+
+  /** Check whether the sync endpoint is reachable. */
+  syncStatus(): Promise<SyncStatusResponse> {
+    return this.get<SyncStatusResponse>("/v1/sync/status");
+  }
+
+  // ─── Branches ─────────────────────────────────────────────────────────────
+
+  /**
+   * Access branching operations: list, create, get, delete, rename, and switch.
+   * Requires the server to be started with `FEATURE_BRANCHING=true`; operations
+   * return a 400 error otherwise.
+   */
+  get branches(): BranchesClient {
+    if (!this._branches) {
+      const req: BranchesRequester = {
+        post: (path, body, headers) => this.post(path, body, headers),
+        get: (path) => this.get(path),
+        delete: (path) => this.delete(path),
+        patch: (path, body) => this.patch(path, body),
+      };
+      this._branches = new BranchesClient(req);
+    }
+    return this._branches;
+  }
+
   // ─── Honker ───────────────────────────────────────────────────────────────
 
   /**
@@ -420,6 +553,102 @@ export class FlexDBClient {
 
   private delete<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
     return this.request<T>("DELETE", path, undefined, extraHeaders);
+  }
+
+  private patch<T>(
+    path: string,
+    body: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
+    return this.request<T>("PATCH", path, body, extraHeaders);
+  }
+
+  private async getBytes(path: string): Promise<Uint8Array> {
+    const node = this.manager.next();
+    const url = `${node.url}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    const headers: Record<string, string> = {};
+    if (this.authToken) headers["Authorization"] = `Bearer ${this.authToken}`;
+
+    let res: Response;
+    try {
+      res = await fetch(url, { headers, signal: controller.signal });
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      this.manager.markFailed(node.url);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new FlexDBTimeoutError(url, this.timeoutMs);
+      }
+      throw new FlexDBNoHealthyNodeError();
+    }
+    clearTimeout(timer);
+
+    if (res.ok) {
+      this.manager.markHealthy(node.url);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    let errBody: { error?: string } = {};
+    try { errBody = (await res.json()) as { error?: string }; } catch { /* ignore */ }
+    const message = errBody.error ?? res.statusText;
+    switch (res.status) {
+      case 401: throw new FlexDBAuthError(node.url);
+      case 503: throw new FlexDBNoLeaderError(node.url);
+      default: throw new FlexDBError(message, res.status, node.url);
+    }
+  }
+
+  private async postBinary<T>(
+    path: string,
+    data: Uint8Array | ArrayBuffer,
+    queryParams?: Record<string, string>,
+  ): Promise<T> {
+    const node = this.manager.next();
+    const qs = queryParams
+      ? "?" + new URLSearchParams(queryParams).toString()
+      : "";
+    const url = `${node.url}${path}${qs}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/octet-stream",
+    };
+    if (this.authToken) headers["Authorization"] = `Bearer ${this.authToken}`;
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: data instanceof ArrayBuffer ? new Uint8Array(data) : data,
+        signal: controller.signal,
+      });
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      this.manager.markFailed(node.url);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new FlexDBTimeoutError(url, this.timeoutMs);
+      }
+      throw new FlexDBNoHealthyNodeError();
+    }
+    clearTimeout(timer);
+
+    if (res.ok) {
+      this.manager.markHealthy(node.url);
+      return res.json() as Promise<T>;
+    }
+
+    let errBody: { error?: string; code?: number } = {};
+    try { errBody = (await res.json()) as { error?: string; code?: number }; } catch { /* ignore */ }
+    const message = errBody.error ?? res.statusText;
+    switch (res.status) {
+      case 401: throw new FlexDBAuthError(node.url);
+      case 503: throw new FlexDBNoLeaderError(node.url);
+      default: throw new FlexDBError(message, res.status, node.url);
+    }
   }
 
   private async getRaw(path: string): Promise<string> {
